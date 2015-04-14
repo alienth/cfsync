@@ -53,6 +53,7 @@ section = "cloudflare"
 
 username = config.get(section, "username")
 user_id = urllib.quote(config.get(section, "user_id"), safe='')
+api_key = urllib.quote(config.get(section, "api_key"), safe='')
 login_pass = config.get(section, "login_pass")
 archive_repo = config.get(section, "archive_repo")
 
@@ -64,20 +65,19 @@ def login(br):
 
   m = re.search('"atok":"(.*?)"', response.read())
   if m:
-    atok = m.group(1)
-    return atok
+    pass
   else:
     raise Exception('Unable to locate atok - login may have failed.' \
                     'Browser title: %s' %
                     br.title())
 
-
-def get_zones(br, atok):
-  br.addheaders = [('referer', 'https://www.cloudflare.com/my-websites')]
-  uri = 'https://www.cloudflare.com/api/v2/zone/load_index?atok=%s' % atok
+def get_zones(br):
+  uri = 'https://api.cloudflare.com/client/v4/zones'
   response = br.open(uri)
-  index = json.loads(response.read())['response']['zone_index'].values()
-  zones = [zone for sublist in index for zone in sublist]
+  data = json.loads(response.read())['result']
+  zones = {}
+  for zone in data:
+    zones[zone['name']] = zone['id']
   return zones
 
 
@@ -85,29 +85,40 @@ def get_rules(br, zone):
   uri = "https://www.cloudflare.com/api/v2/rpat/load_multi?user_id=%s&z=%s" %\
         (user_id, zone)
   response = br.open(uri)
-  rpats = json.loads(response.read())
+  rpats = json.loads(response.read())['response']
   return rpats
+
+def get_settings(br, zone_id):
+  uri = 'https://api.cloudflare.com/client/v4/zones/%s/settings' % zone_id
+  response = br.open(uri)
+  data = json.loads(response.read())['result']
+  return data
 
 def main():
   target = tempfile.mkdtemp()
   try:
     repo = git.Repo.clone_from(archive_repo, target)
     br = mechanize.Browser()
-    atok = urllib.quote(login(br), safe='')
-    zones = get_zones(br, atok)
+    login(br)
+    br.addheaders = [('X-Auth-Email', username),
+                     ('X-Auth-Key', api_key)]
+    zones = get_zones(br)
 
     index_modified = False
-    for zone in zones:
+    for zone, zone_id in zones.iteritems():
       # sanitize our internet-sourced data
       zone = urllib.quote(zone, safe='')
-      rules = get_rules(br, zone)
+      zone_id = urllib.quote(zone_id, safe='')
+      data = {}
+      data['pagerules'] = get_rules(br, zone)
+      data['settings'] = get_settings(br, zone_id)
       filename = os.path.join(target, zone)
 
       newfile = False
       if not os.path.exists(filename):
         newfile = True
       f = open(filename, 'w')
-      json.dump(rules, f, indent=2, sort_keys=True)
+      json.dump(data, f, indent=2, sort_keys=True)
       f.close()
       if repo.is_dirty(index=False) or newfile:
         repo.index.add([zone])
@@ -116,8 +127,8 @@ def main():
     if args.commit and index_modified:
       repo.index.commit("autocommit of changes")
       repo.remote().push()
-    else:
-      print "Remote rules matched archive. No changes recorded."
+    if not index_modified:
+      print "Remote data matched archive. No changes recorded."
   finally:
     if args.commit:
       shutil.rmtree(target)
