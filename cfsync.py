@@ -58,16 +58,22 @@ login_pass = config.get(section, "login_pass")
 archive_repo = config.get(section, "archive_repo")
 
 def login(br):
-  response = br.open("https://www.cloudflare.com/login")
-  br.select_form(name="loginForm")
-  br["login_email"], br["login_pass"] = (username, login_pass)
-  response = br.submit()
+  login_url = "https://www.cloudflare.com/a/login"
+  response = br.open(login_url)
+  logindata = {
+                "email":    username,
+                "password": login_pass,
+              }
 
-  m = re.search('"atok":"(.*?)"', response.read())
+  m = re.search('"security_token":"(.*?)"', response.read())
   if m:
-    pass
+    token = m.group(1)
+    logindata['security_token'] = token
+    response = br.open(login_url, data=urllib.urlencode(logindata))
+    if "/a/account" not in response.read():
+      raise Exception('Login appears to have failed.')
   else:
-    raise Exception('Unable to locate atok - login may have failed.' \
+    raise Exception('Unable to login - no security token present' \
                     'Browser title: %s' %
                     br.title())
 
